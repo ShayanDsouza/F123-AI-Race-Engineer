@@ -98,15 +98,28 @@ def session_packet(session_time: float, frame: int) -> bytes:
     return pad_to(header(pk.PID_SESSION, session_time, frame) + body, 644)
 
 
-def _lap_car(lap_num, lap_dist, cur_ms, last_ms, total_dist, position) -> bytes:
-    return struct.pack(pk.LAP_DATA_FMT, last_ms, cur_ms, 0, 0, 0, 0, 0, 0,
+def sector_times(trace: dict) -> tuple:
+    """(s1, s2, s3) in ms for a built lap, split at thirds of the distance."""
+    t1 = float(np.interp(TRACK_LEN / 3, trace["s"], trace["t"]))
+    t2 = float(np.interp(2 * TRACK_LEN / 3, trace["s"], trace["t"]))
+    total = int(trace["lap_time"] * 1000)
+    s1, s2 = int(t1 * 1000), int((t2 - t1) * 1000)
+    return s1, s2, total - s1 - s2
+
+
+def _lap_car(lap_num, lap_dist, cur_ms, last_ms, total_dist, position,
+             s1=0, s2=0) -> bytes:
+    """s1/s2: this lap's completed sector times so far (0 until the sector
+    is done), exactly as the game reports them."""
+    return struct.pack(pk.LAP_DATA_FMT, last_ms, cur_ms, s1 % 60000, s1 // 60000,
+                       s2 % 60000, s2 // 60000, 0, 0,
                        lap_dist, total_dist, 0.0, position, lap_num, 0, 0,
                        min(2, int(3 * lap_dist / TRACK_LEN)), 0, 0, 0, 0, 0, 0,
                        position, 1, 2, 0, 0, 0, 0)
 
 
 def lap_data_packet(session_time, frame, cars) -> bytes:
-    """cars: list of (lap_num, dist, cur_ms, last_ms, total, position)."""
+    """cars: list of (lap_num, dist, cur_ms, last_ms, total, position[, s1, s2])."""
     body = b"".join(_lap_car(*c) for c in cars)
     empty = struct.pack(pk.LAP_DATA_FMT, *([0] * 8), 0.0, 0.0, 0.0,
                         *([0] * 15), 0, 0, 0)
@@ -156,18 +169,88 @@ def damage_packet(session_time, frame, wear) -> bytes:
             + b"\x00" * pk.CAR_DAMAGE_SIZE * (pk.NUM_CARS - 2))
 
 
-def history_packet(session_time, frame, lap_times_ms: list) -> bytes:
-    fixed = struct.pack(pk.SESSION_HISTORY_FIXED_FMT, 0, len(lap_times_ms),
+def history_packet(session_time, frame, lap_times: list) -> bytes:
+    """lap_times: list of (lap_ms, s1_ms, s2_ms) for car 0; sector 3 is the
+    remainder."""
+    fixed = struct.pack(pk.SESSION_HISTORY_FIXED_FMT, 0, len(lap_times),
                         1, 1, 1, 1, 1)
     laps = b""
-    for ms in lap_times_ms:
-        s = ms // 3
-        laps += struct.pack(pk.LAP_HISTORY_FMT, ms, s % 60000, s // 60000,
-                            s % 60000, s // 60000, (ms - 2 * s) % 60000,
-                            (ms - 2 * s) // 60000, 0x01)
-    laps += b"\x00" * pk.LAP_HISTORY_SIZE * (100 - len(lap_times_ms))
+    for ms, s1, s2 in lap_times:
+        s3 = ms - s1 - s2
+        laps += struct.pack(pk.LAP_HISTORY_FMT, ms, s1 % 60000, s1 // 60000,
+                            s2 % 60000, s2 // 60000, s3 % 60000, s3 // 60000, 0x01)
+    laps += b"\x00" * pk.LAP_HISTORY_SIZE * (100 - len(lap_times))
     stints = struct.pack("<BBB", 255, 18, 16) + b"\x00" * 21
     return header(pk.PID_SESSION_HISTORY, session_time, frame) + fixed + laps + stints
+
+
+# ------------------------------------------------------------------ session ----
+def session_datagrams(lap: dict, ai: dict, laps: int = 2, rate: float = 20.0,
+                      rng_seed: int = 1):
+    """Yield (delay_s, datagram) for a whole synthetic session: `laps` full
+    laps of the player, plus a few ticks of the next lap so the last one
+    finalizes. The AI car runs on its own clock, so it completes its (quicker)
+    laps at its own times and reports its own lap and sector times. This is
+    the same stream `main()` puts on the wire; tests feed it to the recorder
+    directly."""
+    frame = 0
+    session_time = 0.0
+    tick = 1.0 / rate
+    lap_ms = int(lap["lap_time"] * 1000)
+    ai_ms = int(ai["lap_time"] * 1000)
+    lap_sectors, ai_sectors = sector_times(lap), sector_times(ai)
+    done_laps: list = []                      # (ms, s1, s2) for the player
+
+    def sectors_so_far(sec, d):
+        s1 = sec[0] if d > TRACK_LEN / 3 else 0
+        s2 = sec[1] if d > 2 * TRACK_LEN / 3 else 0
+        return s1, s2
+
+    for lap_num in range(1, laps + 2):
+        n_ticks = 40 if lap_num > laps else int(lap["lap_time"] / tick)
+        for k in range(n_ticks):
+            t_lap = k * tick
+            frame += 1
+            session_time += tick
+            cur_ms = int(t_lap * 1000)
+            last_ms = done_laps[-1][0] if done_laps else 0
+            # the AI car on its own lap clock
+            ai_elapsed = (lap_num - 1) * lap["lap_time"] + t_lap
+            ai_lap_num = int(ai_elapsed // ai["lap_time"]) + 1
+            ai_t = ai_elapsed - (ai_lap_num - 1) * ai["lap_time"]
+            ai_last = ai_ms if ai_lap_num > 1 else 0
+
+            cars_lap, cars_tel = [], []
+            cars = ((lap, lap_num, t_lap, cur_ms, last_ms, lap_sectors),
+                    (ai, ai_lap_num, ai_t, int(ai_t * 1000), ai_last, ai_sectors))
+            for pos, (trace, num, t_in, cur, last, sec) in enumerate(cars, start=1):
+                d = float(np.interp(t_in, trace["t"], trace["s"]))
+                d = min(d, TRACK_LEN - 0.1)
+                i = min(len(trace["s"]) - 1, int(d / 2.0))
+                total = (num - 1) * TRACK_LEN + d
+                s1, s2 = sectors_so_far(sec, d)
+                cars_lap.append((num, d, cur, last, total, pos, s1, s2))
+                cars_tel.append((trace["speed"][i], trace["throttle"][i],
+                                 trace["brake"][i], trace["gear"][i],
+                                 trace["rpm"][i], trace["drs"][i]))
+            yield tick, lap_data_packet(session_time, frame, cars_lap)
+            yield 0.0, telemetry_packet(session_time, frame, cars_tel)
+            if frame % 20 == 0:
+                yield 0.0, session_packet(session_time, frame)
+                yield 0.0, participants_packet(session_time, frame)
+                total = (lap_num - 1) * TRACK_LEN + cars_lap[0][1]
+                fuel = 12.0 - 1.6 * (total / TRACK_LEN)
+                wear = 3.0 * (total / TRACK_LEN)
+                ers = min(4e6, 4e6 * t_lap / lap["lap_time"] * 0.8)
+                yield 0.0, status_packet(session_time, frame, fuel, ers)
+                yield 0.0, damage_packet(session_time, frame, wear)
+            if frame % 60 == 0 and done_laps:
+                yield 0.0, history_packet(session_time, frame, done_laps)
+        if lap_num <= laps:
+            noise = int(np.random.default_rng(rng_seed + lap_num).normal(0, 250))
+            done_laps.append((lap_ms + noise, lap_sectors[0], lap_sectors[1]))
+            yield 0.0, history_packet(session_time, frame, done_laps)
+            print(f"  lap {lap_num} complete: {done_laps[-1][0]} ms")
 
 
 # --------------------------------------------------------------------- main ----
@@ -191,50 +274,10 @@ def main():
           f"(AI VERSTAPPEN {ai_ms // 60000}:{ai_ms % 60000 / 1000:06.3f}) "
           f"over {TRACK_LEN:.0f} m — sending to {addr[0]}:{addr[1]}")
 
-    frame = 0
-    session_time = 0.0
-    tick = 1.0 / args.rate
-    done_laps: list = []
-    for lap_num in range(1, args.laps + 2):
-        if lap_num > args.laps:
-            # a few ticks of the next lap so the previous one finalizes
-            n_ticks = 40
-        else:
-            n_ticks = int(lap["lap_time"] / tick)
-        for k in range(n_ticks):
-            t_lap = k * tick
-            frame += 1
-            session_time += tick
-            cur_ms = int(t_lap * 1000)
-            last_ms = done_laps[-1] if done_laps else 0
-
-            cars_lap, cars_tel = [], []
-            for pos, trace in enumerate((lap, ai), start=1):
-                d = float(np.interp(t_lap, trace["t"], trace["s"]))
-                d = min(d, TRACK_LEN - 0.1)
-                i = min(len(trace["s"]) - 1, int(d / 2.0))
-                total = (lap_num - 1) * TRACK_LEN + d
-                cars_lap.append((lap_num, d, cur_ms, last_ms, total, pos))
-                cars_tel.append((trace["speed"][i], trace["throttle"][i],
-                                 trace["brake"][i], trace["gear"][i],
-                                 trace["rpm"][i], trace["drs"][i]))
-            sock.sendto(lap_data_packet(session_time, frame, cars_lap), addr)
-            sock.sendto(telemetry_packet(session_time, frame, cars_tel), addr)
-            if frame % 20 == 0:
-                sock.sendto(session_packet(session_time, frame), addr)
-                sock.sendto(participants_packet(session_time, frame), addr)
-                fuel = 12.0 - 1.6 * (total / TRACK_LEN)
-                wear = 3.0 * (total / TRACK_LEN)
-                ers = min(4e6, 4e6 * t_lap / lap["lap_time"] * 0.8)
-                sock.sendto(status_packet(session_time, frame, fuel, ers), addr)
-                sock.sendto(damage_packet(session_time, frame, wear), addr)
-            if frame % 60 == 0 and done_laps:
-                sock.sendto(history_packet(session_time, frame, done_laps), addr)
-            time.sleep(tick / args.speedup)
-        if lap_num <= args.laps:
-            done_laps.append(lap_ms + int(np.random.default_rng(lap_num).normal(0, 250)))
-            sock.sendto(history_packet(session_time, frame, done_laps), addr)
-            print(f"  lap {lap_num} complete: {done_laps[-1]} ms")
+    for delay, datagram in session_datagrams(lap, ai, laps=args.laps, rate=args.rate):
+        if delay:
+            time.sleep(delay / args.speedup)
+        sock.sendto(datagram, addr)
     print("Done.")
 
 

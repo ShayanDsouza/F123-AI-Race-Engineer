@@ -6,8 +6,12 @@ in the game" possible alongside the real-2023 comparison.
 
 The player's trace is kept at full resolution; opponents are decimated by
 distance (a sample every few metres) to keep a full grid's worth of laps to a
-sane size on disk. Flashbacks and restarts are detected as large backwards
-jumps in lap distance and discard the partial lap.
+sane size on disk.
+
+Flashbacks rewind lap distance (and the game's lap timer) without changing the
+lap counter: the samples the driver is about to re-drive are dropped so the
+trace stays monotonic. A rewind across the start line, and a session restart,
+discard the partial lap instead.
 """
 from __future__ import annotations
 
@@ -20,6 +24,8 @@ from . import packets as pk
 
 OPPONENT_SAMPLE_METRES = 3.0   # decimation for non-player cars
 SESSION_TAKEOVER_S = 5.0       # quiet period before another session may take over
+FLASHBACK_REWIND_M = 30.0      # backwards jump in lap distance that means a flashback
+LAP_TIME_TOLERANCE_MS = 1500   # game lap time vs trace clock before we distrust it
 
 
 def _new_thermal() -> dict:
@@ -35,7 +41,7 @@ class CarState:
                  "last_lap_distance", "last_sample_dist", "latest_lap",
                  "latest_status", "latest_damage", "latest_telemetry",
                  "sector_history", "wear_at_lap", "fuel_at_lap", "thermal",
-                 "flashback_pending", "wrap_guard")
+                 "buffer_lap_num", "flashbacks", "wrap_guard")
 
     def __init__(self):
         self.samples: list = []
@@ -53,7 +59,12 @@ class CarState:
         # running sums for this lap: tyre/brake temps and pressures are the
         # only real setup signal the game gives us
         self.thermal: dict = _new_thermal()
-        self.flashback_pending: bool = False
+        # The lap number the buffered samples belong to. The game's counter
+        # can lag the distance reset by seconds (pit exit) or lead it by a
+        # frame, so it is read mid-lap, never from the packet that opened or
+        # closed the lap.
+        self.buffer_lap_num: Optional[int] = None
+        self.flashbacks: int = 0
         self.wrap_guard: bool = False
 
     def discard(self):
@@ -62,7 +73,8 @@ class CarState:
         self.last_lap_distance = -1.0
         self.last_sample_dist = -1e9
         self.thermal = _new_thermal()
-        self.flashback_pending = False
+        self.buffer_lap_num = None
+        self.flashbacks = 0
 
 
 def _thermal_summary(th: dict) -> Optional[dict]:
@@ -87,6 +99,28 @@ def _thermal_summary(th: dict) -> Optional[dict]:
         "left_right_surface_delta_c": round(
             (surface[0] + surface[2]) / 2 - (surface[1] + surface[3]) / 2, 1),
     }
+
+
+def _sector_times(hist: Optional[pk.LapHistoryEntry],
+                  closing_lap: Optional[pk.LapData],
+                  lap_time_ms: int) -> tuple:
+    """Official sector times for the lap just completed, or (None,)*3.
+
+    The session-history packet is the authority but arrives up to a second
+    after the line, so it usually is not there yet. The last LapData packet
+    of the lap carries sectors 1 and 2 (they are zeroed once the counter
+    ticks over); sector 3 is what remains of the lap time.
+    """
+    if hist and hist.lap_time_ms > 0 and hist.sector1_ms > 0 \
+            and hist.sector2_ms > 0 and hist.sector3_ms > 0:
+        return hist.sector1_ms, hist.sector2_ms, hist.sector3_ms
+    if closing_lap is not None and lap_time_ms > 0:
+        s1 = closing_lap.sector1_time_ms + 60000 * closing_lap.sector1_minutes
+        s2 = closing_lap.sector2_time_ms + 60000 * closing_lap.sector2_minutes
+        s3 = lap_time_ms - s1 - s2
+        if s1 > 0 and s2 > 0 and s3 > 0:
+            return s1, s2, s3
+    return None, None, None
 
 
 class LapRecorder:
@@ -196,7 +230,9 @@ class LapRecorder:
             if lap.result_status == 0 and lap.current_lap_num == 0:
                 continue
             car = self._car(idx)
+            prev = car.latest_lap
             d = lap.lap_distance
+            last = car.last_lap_distance
             track_len = self.session.track_length if self.session else 0
 
             # A completed lap is detected by the DISTANCE wrapping from near
@@ -205,8 +241,15 @@ class LapRecorder:
             # reset by many seconds, which used to bleed the first ~2 km of the
             # first flying lap into the out-lap's buffer (that lost the opening
             # of every first flying lap). The distance reset does not lag.
-            wrapped = (track_len and car.last_lap_distance > 0.6 * track_len
+            wrapped = (track_len and last > 0.6 * track_len
                        and 0 <= d < 0.2 * track_len)
+            # Flashback back across the start line: distance leaps forward by
+            # most of a lap. The lap we were building is gone.
+            leapt_back_a_lap = (track_len and last >= 0
+                                and d > last + 0.5 * track_len)
+            # Flashback within the lap: distance rewinds by more than a few
+            # metres. The rewound stretch is about to be driven again.
+            rewound = last >= 0 and d < last - FLASHBACK_REWIND_M
 
             if car.current_lap_num is None:
                 car.current_lap_num = lap.current_lap_num
@@ -219,15 +262,30 @@ class LapRecorder:
                 car.current_lap_num = lap.current_lap_num  # keep label in sync
 
             if wrapped and not car.wrap_guard:
-                self._finalize_lap(idx, last_lap_time_ms=lap.last_lap_time_ms)
+                self._finalize_lap(idx, last_lap_time_ms=lap.last_lap_time_ms,
+                                   closing_lap=prev)
                 car.wrap_guard = True            # don't re-fire near the line
+            elif leapt_back_a_lap:
+                car.discard()
+                car.wrap_guard = False           # the line will be crossed again
+                self.discards += 1
+                self.last_discard = {"car": idx, "at": time.strftime("%H:%M:%S"),
+                                     "reason": "flashback across the start line"}
+            elif rewound and not wrapped:
+                # keep only what lies before the point we rewound to
+                car.samples = [smp for smp in car.samples if smp[0] < d]
+                car.last_sample_dist = car.samples[-1][0] if car.samples else -1e9
+                car.flashbacks += 1
             elif d > 800:
                 car.wrap_guard = False           # clearly into the new lap
 
-            # No backwards-jump discard: the analysis layer sorts samples by
-            # distance and drops non-increasing duplicates, so a flashback's
-            # overlapping samples clean up on their own.
             car.last_lap_distance = d
+            # From here on this packet describes the lap now being buffered.
+            # Near the line the counter may not have ticked yet (or may have
+            # ticked early); by mid-lap it is unambiguous.
+            mid_lap = track_len and 0.2 * track_len < d < 0.8 * track_len
+            if car.buffer_lap_num is None or mid_lap:
+                car.buffer_lap_num = lap.current_lap_num
 
             if lap.current_lap_invalid:
                 car.lap_invalid = True
@@ -278,7 +336,14 @@ class LapRecorder:
 
     # ------------------------------------------------------------------
     def _finalize_lap(self, car_index: int, last_lap_time_ms: int = 0,
-                      abandoned: bool = False):
+                      abandoned: bool = False,
+                      closing_lap: Optional[pk.LapData] = None):
+        """Close the buffered lap for one car and hand it to storage.
+
+        `closing_lap` is the last LapData packet *before* the distance reset:
+        it still carries the completed lap's sector 1 and 2 times, which the
+        packet that closed the lap has usually already zeroed.
+        """
         car = self.cars.get(car_index)
         if car is None:
             return
@@ -289,21 +354,35 @@ class LapRecorder:
         car.last_lap_distance = -1.0
         car.last_sample_dist = -1e9
         thermal_done, car.thermal = car.thermal, _new_thermal()
+        lap_num = car.buffer_lap_num if car.buffer_lap_num is not None \
+            else (car.current_lap_num or 0)
+        car.buffer_lap_num = None
+        flashbacks, car.flashbacks = car.flashbacks, 0
 
         is_player = car_index == self.player_index
         track_len = self.session.track_length if self.session else 0
         coverage = (samples[-1][0] - samples[0][0]) if samples else 0
-        lap_time = last_lap_time_ms or (samples[-1][1] if samples else 0)
+        trace_ms = samples[-1][1] if samples else 0
+        # The game's lastLapTime is exact — unless it has not been updated
+        # yet (the counter lag above), in which case it is the previous lap's.
+        # The trace clock is at most a frame short, so a big disagreement
+        # means the game value is stale.
+        lap_time = last_lap_time_ms
+        lap_time_estimated = False
+        if trace_ms and (lap_time <= 0
+                         or abs(lap_time - trace_ms) > LAP_TIME_TOLERANCE_MS):
+            lap_time, lap_time_estimated = trace_ms, True
         min_samples = 50 if is_player else 25
 
         if is_player:
             self.last_finalize = {
                 "at": time.strftime("%H:%M:%S"),
-                "lap_number": car.current_lap_num,
+                "lap_number": lap_num,
                 "samples": len(samples), "coverage_m": round(coverage),
                 "first_m": round(samples[0][0]) if samples else None,
                 "last_m": round(samples[-1][0]) if samples else None,
                 "track_len": track_len, "lap_time_ms": lap_time,
+                "flashbacks": flashbacks,
                 "saved": False, "reason": None,
             }
 
@@ -323,9 +402,10 @@ class LapRecorder:
         if is_player:
             self.last_finalize["saved"] = True
 
+        s1, s2, s3 = _sector_times(car.sector_history.get(lap_num),
+                                   closing_lap, lap_time)
         part = self.participants.get(car_index)
         status, damage = car.latest_status, car.latest_damage
-        hist = car.sector_history.get(car.current_lap_num or 0)
         record = {
             "source": "f123",
             "is_player": is_player,
@@ -343,12 +423,14 @@ class LapRecorder:
             "weather": pk.WEATHER.get(self.session.weather, "?") if self.session else "?",
             "air_temp": self.session.air_temperature if self.session else None,
             "track_temp": self.session.track_temperature if self.session else None,
-            "lap_number": car.current_lap_num or 0,
+            "lap_number": lap_num,
             "lap_time_ms": lap_time,
+            "lap_time_estimated": lap_time_estimated,
+            "flashbacks": flashbacks,
             "invalid": invalid,
-            "sector1_ms": hist.sector1_ms if hist else None,
-            "sector2_ms": hist.sector2_ms if hist else None,
-            "sector3_ms": hist.sector3_ms if hist else None,
+            "sector1_ms": s1,
+            "sector2_ms": s2,
+            "sector3_ms": s3,
             "tyre": status.tyre_name if status else None,
             "tyre_age": status.tyres_age_laps if status else None,
             "fuel_kg": round(status.fuel_in_tank, 1) if status else None,
@@ -393,6 +475,8 @@ class LapRecorder:
                 "last_discard": self.last_discard,
                 "cars_tracked": len(self.cars),
                 "ignored_packets": self.ignored_packets,
+                "session_uid": str(self.session_uid) if self.session_uid else None,
+                "flashbacks_this_lap": car.flashbacks if car else 0,
                 "session": {
                     "track": self.session.track_name,
                     "track_id": self.session.track_id,

@@ -44,6 +44,7 @@ def compound_summary(laps: list) -> list:
             "compound": compound,
             "laps_counted": len(clean),
             "laps_total": len(group),
+            "best_ms": times[0],
             "best": _fmt(times[0]),
             "median": _fmt(int(statistics.median(times))),
             "spread_s": round((times[-1] - times[0]) / 1000, 3),
@@ -62,16 +63,16 @@ def compound_summary(laps: list) -> list:
                 slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
                 entry["deg_s_per_lap"] = round(slope / 1000, 3)
         out.append(entry)
-    out.sort(key=lambda e: e["best"] or "9")
+    out.sort(key=lambda e: e["best_ms"])
     return out
 
 
 def thermal_picture(laps: list) -> Optional[dict]:
     """Average the per-lap thermals across the cleanest laps."""
-    have = [l for l in _clean(laps) if l.get("thermal")]
+    have = [l for l in _clean(laps) if l.get("has_thermal")]
     if not have:
         return None
-    # laps carry only a summary id in the list view — reload for the detail
+    # the listing only says whether thermals exist — reload for the detail
     full = [store.load_lap(l["id"]) for l in have[:8]]
     th = [f["thermal"] for f in full if f and f.get("thermal")]
     if not th:

@@ -30,11 +30,22 @@ strategy calls.
 run.bat            # creates .venv on first run, then serves http://localhost:8000
 ```
 
+The UDP listener starts with the app (port 20777, or `F1_UDP_PORT`), so laps
+are captured from the first session you drive. Set `F1_UDP_AUTOSTART=0` to
+start it by hand from the sidebar instead.
+
 No PS5 handy? The simulator sends a synthetic two-car session (you + an AI
-"VERSTAPPEN") over real UDP:
+"VERSTAPPEN" on its own lap clock) over real UDP:
 
 ```
 .venv\Scripts\python.exe tools\simulate_lap.py
+```
+
+Tests (no console, no network, no API key needed):
+
+```
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
 ## PS5 setup (F1 23)
@@ -47,7 +58,7 @@ No PS5 handy? The simulator sends a synthetic two-car session (you + an AI
    - Send Rate: **60 Hz** (120 Hz gains nothing — the real reference telemetry
      is only ~4 Hz, so 60 Hz is already far finer)
    - UDP Format: **2023**
-4. Press **Start listening** in the sidebar, then get on track.
+4. Check the sidebar shows *Listening on UDP 20777*, then get on track.
 
 F1 23 sends **nothing** from the menus — telemetry only flows once you're in a
 session. The **Hz readout** in the sidebar is the diagnostic: ~60 Hz means data
@@ -57,15 +68,19 @@ Works with F1 24/25 too if you set **UDP Format: 2023**.
 
 ## AI race engineer (Google Gemini)
 
-Get a free key at **https://aistudio.google.com/apikey**, then set it and
-restart the app:
+Get a free key at **https://aistudio.google.com/apikey** and paste it into
+the *Race engineer* panel in the sidebar. It is stored in `data/secrets.json`
+(git-ignored, never sent anywhere but Google) and can be forgotten from the
+same panel. An environment variable works too and takes precedence:
 
 ```powershell
 setx GEMINI_API_KEY "AIza..."
 ```
 
 (`GOOGLE_API_KEY` works too.) The app picks a Gemini model automatically from
-the ones your key can see, preferring a fast one for live race calls.
+the ones your key can see, preferring a fast one for live race calls. The
+engineer only ever sees *your* laps from the session being driven — never the
+AI cars' laps or laps from another circuit.
 
 ### Two modes
 
@@ -125,6 +140,14 @@ analysis.
   `data/fastf1_cache/`.
 - Real telemetry has no steering channel and quantized throttle/brake; treat
   braking-point differences under ~5 m as noise.
+- **Flashbacks** are handled: a rewind inside a lap drops the stretch you are
+  about to re-drive (the lap is saved with a `flashbacks` count); a rewind
+  back across the start line discards the partial lap.
+- **Lap timing.** A lap is closed when the distance counter resets, and its
+  number and sector times are read so that the game's lap counter ticking
+  late (pit exit) or early does not mislabel it. If the game's reported lap
+  time disagrees with the trace by more than 1.5 s the trace clock is used and
+  the lap is flagged `lap_time_estimated`.
 
 ## Project layout
 
@@ -145,8 +168,47 @@ backend/
 frontend/           dashboard (vanilla JS + canvas charts)
 tools/
   simulate_lap.py   synthetic two-car UDP session for testing
-data/               recorded laps + FastF1 cache (created at runtime)
+tests/              pytest suite: packet parsing, lap assembly, analysis, store, API
+data/               recorded laps, FastF1 cache, Gemini key (created at runtime)
 ```
+
+### API surface
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/status` | listener state + live car/session snapshot (polled by the UI) |
+| `GET /api/laps?scope=player\|opponent\|all` | recorded laps (headers only, indexed) |
+| `GET/DELETE /api/laps/{id}` | one lap with its full trace |
+| `GET /api/compare` | your lap vs a real 2023 lap (FastF1 or OpenF1) |
+| `GET /api/compare_ingame` | your lap vs an AI car from your own session |
+| `GET /api/real/…` | 2023 calendar, drivers, laps, session fastest, track outline |
+| `GET /api/engineer/briefing` | the analysed lap history the debrief is built on |
+| `POST /api/engineer/advice\|debrief\|ask` | Gemini race calls, debrief, follow-ups |
+| `POST/DELETE /api/engineer/key` | store or forget the Gemini key locally |
+| `GET /api/debug/cars` | per-car recorder state |
+
+## Roadmap
+
+Ordered by how much they would change what you see on screen.
+
+1. **Live push instead of polling.** The UI asks `/api/status` every 2 s. A
+   WebSocket fed straight from the recorder would make race mode react within a
+   frame and drop the per-poll lap re-listing entirely.
+2. **A game-derived track map.** The motion packet carries world X/Y/Z for
+   every car; recording it alongside the trace would give a circuit outline
+   for *every* track, including short layouts and pre-2023 circuits, instead
+   of borrowing the real 2023 outline.
+3. **Late sector-time fill.** The session-history packet for a lap arrives up
+   to a second after the line. Sector times are already recovered from the
+   closing LapData packet; patching the saved file when the official history
+   arrives would make the two agree to the millisecond.
+4. **Corner names.** Detected corners are numbered by position; a per-circuit
+   table (T1 = "Turn 1", Spa's "Eau Rouge") would make the coaching notes and
+   radio calls read like a real engineer's.
+5. **Per-lap ERS and fuel deltas** for the AI cars, so the in-game comparison
+   can say how much of the gap is engine mode rather than driving.
+6. **Persist the engineer's radio history** per session on disk, so a restart
+   mid-race does not make it repeat calls it already gave.
 
 ## Troubleshooting
 

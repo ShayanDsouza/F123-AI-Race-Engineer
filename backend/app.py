@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -27,21 +28,27 @@ logging.basicConfig(level=logging.INFO)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-app = FastAPI(title="Sim vs Reality", version="1.0")
-
 recorder = LapRecorder(on_lap_complete=lambda rec: _on_lap(rec))
 listener = UdpListener(on_datagram=recorder.feed)
 
 
-@app.on_event("startup")
-def _autostart_listener():
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
     """Always be listening. Requiring a manual click after every restart just
     loses laps the user already drove."""
     port = int(os.environ.get("F1_UDP_PORT", "20777"))
-    if listener.start(port):
-        log.info("UDP listener auto-started on %s", port)
-    else:
-        log.warning("could not auto-start listener: %s", listener.error)
+    if os.environ.get("F1_UDP_AUTOSTART", "1") != "0":
+        if listener.start(port):
+            log.info("UDP listener auto-started on %s", port)
+        else:
+            log.warning("could not auto-start listener: %s", listener.error)
+    try:
+        yield
+    finally:
+        listener.stop()
+
+
+app = FastAPI(title="Sim vs Reality", version="1.1", lifespan=_lifespan)
 
 
 def _on_lap(record: dict):
@@ -376,6 +383,19 @@ def debug_cars():
 
 
 # --------------------------------------------------------- race engineer ----
+def _own_recent_laps(live: dict) -> list:
+    """The player's laps from the session being driven right now. Opponent
+    laps, and the driver's laps from other tracks, would give the engineer a
+    'recent lap' history that is not theirs."""
+    mine = [l for l in store.list_laps() if l.get("is_player")]
+    uid = live.get("session_uid")
+    same = [l for l in mine if uid and l.get("session_uid") == uid]
+    if same:
+        return same
+    track = (live.get("session") or {}).get("track")
+    return [l for l in mine if l.get("track_name") == track]
+
+
 class EngineerRequest(BaseModel):
     question: Optional[str] = None
     mode: str = "race"
@@ -386,7 +406,38 @@ def engineer_status():
     from .engineer import engineer
     return {"available": engineer.available, "provider": "google-gemini",
             "key_env": "GEMINI_API_KEY",
+            "key_source": engineer.key_source,
             "history": engineer.history[-10:]}
+
+
+class KeyRequest(BaseModel):
+    key: str
+
+
+@app.post("/api/engineer/key")
+def engineer_set_key(req: KeyRequest):
+    """Store a Gemini key beside the recorded laps (git-ignored) so a shipped
+    copy works without touching environment variables. The key itself is
+    never sent back out."""
+    from . import engineer as eng
+    key = (req.key or "").strip()
+    if not key.startswith("AIza") or len(key) < 30:
+        raise HTTPException(status_code=400, detail=(
+            "That does not look like a Gemini API key — they start with "
+            "'AIza'. Get one at https://aistudio.google.com/apikey"))
+    eng.write_local_key(key)
+    eng.engineer.forget_client()
+    return {"available": eng.engineer.available,
+            "key_source": eng.engineer.key_source}
+
+
+@app.delete("/api/engineer/key")
+def engineer_clear_key():
+    from . import engineer as eng
+    eng.clear_local_key()
+    eng.engineer.forget_client()
+    return {"available": eng.engineer.available,
+            "key_source": eng.engineer.key_source}
 
 
 @app.post("/api/engineer/reset")
@@ -471,9 +522,10 @@ def engineer_advice(req: EngineerRequest):
             "No live telemetry. Start the listener and get on track in F1 23 — "
             "the engineer works from your live car state."))
 
-    state = eng.build_state(live, store.list_laps())
+    state = eng.build_state(live, _own_recent_laps(live))
     track_id = (live.get("session") or {}).get("track_id")
-    event = pk.TRACK_TO_2023_EVENT.get(track_id)         if track_id not in pk.SHORT_LAYOUT_IDS else None
+    event = (pk.TRACK_TO_2023_EVENT.get(track_id)
+             if track_id not in pk.SHORT_LAYOUT_IDS else None)
     mode = "debrief" if req.mode == "debrief" else "race"
     try:
         return eng.engineer.advice(state, event=event, question=req.question,

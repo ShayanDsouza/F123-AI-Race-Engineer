@@ -43,6 +43,24 @@ def write_local_key(key: str):
     SECRETS_PATH.write_text(_json.dumps({"gemini_api_key": key.strip()}, indent=2),
                             encoding="utf-8")
 
+
+def clear_local_key():
+    try:
+        SECRETS_PATH.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _thinking(level: str):
+    """A ThinkingConfig for LOW / MEDIUM / HIGH that also works on SDK
+    versions without ThinkingLevel (they take a token budget instead)."""
+    from google.genai import types
+    levels = getattr(types, "ThinkingLevel", None)
+    if levels is not None and hasattr(levels, level):
+        return types.ThinkingConfig(thinking_level=getattr(levels, level))
+    budget = {"LOW": 512, "MEDIUM": 2048, "HIGH": 8192}[level]
+    return types.ThinkingConfig(thinking_budget=budget)
+
 # Preferred models, best first. Resolved against the models the key can
 # actually see, so this keeps working as the model line-up moves on.
 # Newest first, with Google's own "-latest" aliases as the safety net. Model
@@ -267,6 +285,19 @@ class RaceEngineer:
     def available(self) -> bool:
         return bool(self.api_key)
 
+    @property
+    def key_source(self) -> Optional[str]:
+        if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+            return "env"
+        return "file" if read_local_key() else None
+
+    def forget_client(self):
+        """Drop the cached client so the next call picks up a changed key."""
+        with self._lock:
+            self._client = None
+            self._client_key = None
+            self._model_cache.clear()
+
     def _get_client(self):
         key = self.api_key
         if self._client is None or self._client_key != key:
@@ -345,8 +376,9 @@ class RaceEngineer:
                question: Optional[str] = None, mode: str = "race") -> dict:
         if not self.available:
             raise RuntimeError(
-                "No Gemini API key. Set GEMINI_API_KEY in your environment and "
-                "restart the app. Get a key at https://aistudio.google.com/apikey")
+                "No Gemini API key. Paste one into the Race engineer panel, or "
+                "set GEMINI_API_KEY and restart the app. Get a key at "
+                "https://aistudio.google.com/apikey")
 
         from google.genai import types
         track = state.get("track") or "Unknown circuit"
@@ -370,9 +402,7 @@ class RaceEngineer:
         prompt = "\n".join(parts)
         # Race calls must land while the information is still useful, so keep
         # thinking shallow; a debrief can afford to reason properly.
-        thinking = types.ThinkingConfig(
-            thinking_level=types.ThinkingLevel.LOW if mode == "race"
-            else types.ThinkingLevel.HIGH)
+        thinking = _thinking("LOW" if mode == "race" else "HIGH")
         config = types.GenerateContentConfig(
             system_instruction=system,
             response_mime_type="application/json",
@@ -470,7 +500,7 @@ class RaceEngineer:
 
         client = self._get_client()
         prompt = "\n".join(parts)
-        thinking = types.ThinkingConfig(thinking_level=types.ThinkingLevel.HIGH)
+        thinking = _thinking("HIGH")
         config = types.GenerateContentConfig(
             system_instruction=system,
             response_mime_type="application/json",
@@ -555,8 +585,7 @@ class RaceEngineer:
         prompt = "\n".join(parts)
         cfg = types.GenerateContentConfig(
             system_instruction=system, temperature=0.4, max_output_tokens=2048,
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.MEDIUM))
+            thinking_config=_thinking("MEDIUM"))
 
         first = self.resolve_model("debrief")
         candidates = [first] + [m for m in DEBRIEF_MODELS if m != first]

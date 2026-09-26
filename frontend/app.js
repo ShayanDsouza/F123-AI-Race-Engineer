@@ -651,12 +651,40 @@ async function engineerStatus() {
   state.engineerReady = st.available;
   $("eng-dot").className = "dot" + (st.available ? " on" : "");
   $("eng-status").innerHTML = st.available
-    ? `Ready — powered by Google Gemini. Get on track, then hit Radio, or use ` +
-      `race mode for spoken calls while you drive.`
-    : `<span class="err">Set <code>${esc(st.key_env)}</code> in your environment ` +
-      `and restart the app to enable the AI race engineer. Get a free key at ` +
-      `<b>aistudio.google.com/apikey</b>.</span>`;
+    ? `Ready — powered by Google Gemini` +
+      `${st.key_source === "file" ? ` (key saved in the app · <a href="#" id="eng-key-forget">forget</a>)` : ""}. ` +
+      `Get on track, then hit Radio, or use race mode for spoken calls while you drive.`
+    : `<span class="err">No Gemini key. Paste one below (stored locally in ` +
+      `<code>data/secrets.json</code>), or set <code>${esc(st.key_env)}</code> and ` +
+      `restart. Free keys: <b>aistudio.google.com/apikey</b>.</span>`;
+  $("eng-key-row").style.display = st.available ? "none" : "flex";
   $("eng-btn").disabled = !st.available;
+  const forget = $("eng-key-forget");
+  if (forget) forget.addEventListener("click", async (e) => {
+    e.preventDefault();
+    if (!confirm("Forget the saved Gemini key?")) return;
+    try { await api("/api/engineer/key", { method: "DELETE" }); } catch (_) {}
+    engineerStatus();
+  });
+}
+
+async function saveEngineerKey() {
+  const key = $("eng-key").value.trim();
+  if (!key) return;
+  $("eng-key-btn").disabled = true;
+  try {
+    await api("/api/engineer/key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    $("eng-key").value = "";
+    $("eng-key-msg").textContent = "";
+    await engineerStatus();
+  } catch (e) {
+    $("eng-key-msg").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+  $("eng-key-btn").disabled = false;
 }
 
 let engBusy = false;
@@ -704,6 +732,7 @@ function renderAdvice(a) {
 // Auto-call once per completed lap while the checkbox is on.
 let lastAutoLap = null;
 function maybeAutoCall(live) {
+  if (race.on) return;                        // race mode makes its own per-lap call
   if (!$("eng-auto").checked || !state.engineerReady) return;
   const n = live && live.lap && live.lap.number;
   if (!n || n === lastAutoLap) return;
@@ -1218,6 +1247,8 @@ $("race-mute").addEventListener("change", () => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && race.on) exitRaceMode(); });
 
 $("eng-btn").addEventListener("click", () => callEngineer($("eng-question").value.trim()));
+$("eng-key-btn").addEventListener("click", saveEngineerKey);
+$("eng-key").addEventListener("keydown", (e) => { if (e.key === "Enter") saveEngineerKey(); });
 $("eng-question").addEventListener("keydown", (e) => {
   if (e.key === "Enter") callEngineer($("eng-question").value.trim());
 });

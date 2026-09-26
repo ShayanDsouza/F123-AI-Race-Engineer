@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sim vs Reality — F1 23 Telemetry Coach</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='8' height='8' fill='%23fff'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%23fff'/%3E%3Crect x='8' width='8' height='8' fill='%23111'/%3E%3Crect y='8' width='8' height='8' fill='%23111'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/static/style.css?v=3.6">
+<link rel="stylesheet" href="/static/style.css?v=3.7">
 </head>
 <body>
 <div class="layout">
@@ -103,6 +103,12 @@
         <span class="dot" id="eng-dot" title="engineer status"></span>
       </div>
       <div id="eng-status" class="hint">Checking…</div>
+      <div id="eng-key-row" class="row" style="display:none;margin-top:8px">
+        <input id="eng-key" type="password" placeholder="Paste Gemini API key (AIza…)"
+               autocomplete="off" aria-label="Gemini API key">
+        <button id="eng-key-btn" class="btn">Save</button>
+      </div>
+      <div id="eng-key-msg" class="hint"></div>
       <button id="race-enter" class="btn btn-primary" style="margin-top:10px">
         Enter race mode
       </button>
@@ -165,6 +171,10 @@
           <div class="panel">
             <div class="panel-head"><h2>How to improve</h2></div>
             <ul id="insights" class="notes"></ul>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Strategy</h2></div>
+            <ul id="strategy" class="notes"></ul>
           </div>
         </div>
       </section>
@@ -244,7 +254,7 @@
   </div>
 </div>
 
-<script src="/static/charts.js?v=3.6"></script>
-<script src="/static/app.js?v=3.6"></script>
+<script src="/static/charts.js?v=3.7"></script>
+<script src="/static/app.js?v=3.7"></script>
 </body>
 </html>

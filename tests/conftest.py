@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 # tests must never bind the real telemetry port
 os.environ.setdefault("F1_UDP_AUTOSTART", "0")
 
-from backend import store                      # noqa: E402
+from backend import settings, store            # noqa: E402
 from backend.f123.recorder import LapRecorder  # noqa: E402
 from tools import simulate_lap as sim          # noqa: E402
 
@@ -24,6 +24,7 @@ def laps_dir(tmp_path, monkeypatch):
     d = tmp_path / "laps"
     monkeypatch.setattr(store, "DATA_DIR", tmp_path)
     monkeypatch.setattr(store, "LAPS_DIR", d)
+    monkeypatch.setattr(settings, "SETTINGS_PATH", tmp_path / "settings.json")
     store._index.clear()
     yield d
     store._index.clear()

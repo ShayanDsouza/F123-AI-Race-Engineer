@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sim vs Reality — F1 23 Telemetry Coach</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='8' height='8' fill='%23fff'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%23fff'/%3E%3Crect x='8' width='8' height='8' fill='%23111'/%3E%3Crect y='8' width='8' height='8' fill='%23111'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/static/style.css?v=3.7">
+<link rel="stylesheet" href="/static/style.css?v=3.8">
 </head>
 <body>
 <div class="layout">
@@ -21,14 +21,39 @@
 
     <section class="panel" id="listener-panel">
       <div class="panel-head">
-        <h2>PS5 telemetry</h2>
+        <h2>Console telemetry</h2>
         <span class="dot" id="listener-dot" title="listener status"></span>
       </div>
       <div class="row">
         <input id="port-input" type="number" value="20777" min="1024" max="65535" aria-label="UDP port">
         <button id="listener-btn" class="btn">Start listening</button>
+        <button id="setup-btn" class="btn" title="how to connect your console">Setup</button>
       </div>
       <div id="live-status" class="live-status">Listener stopped.</div>
+
+      <details id="setup" class="setup">
+        <summary>Connect your PS5 / Xbox / PC — 2 minutes</summary>
+        <div class="setup-body">
+          <div class="setup-diag" id="setup-diag">Checking…</div>
+          <ol class="setup-steps">
+            <li>Console and this computer on the <b>same Wi-Fi / network</b>.</li>
+            <li>In F1 23 (or F1 24/25): <b>Settings → Telemetry Settings</b>.</li>
+            <li>Set:
+              <table class="setup-table">
+                <tr><td>UDP Telemetry</td><td><b>On</b></td></tr>
+                <tr><td>UDP Broadcast Mode</td><td><b>On</b> <span class="u">(easiest — no IP needed)</span></td></tr>
+                <tr><td>…or Broadcast <b>Off</b> + IP Address</td>
+                    <td><b id="setup-ip">…</b> <button id="setup-copy" class="btn btn-mini" title="copy">copy</button></td></tr>
+                <tr><td>UDP Port</td><td><b id="setup-port">20777</b></td></tr>
+                <tr><td>UDP Send Rate</td><td><b>60 Hz</b></td></tr>
+                <tr><td>UDP Format</td><td><b>2023</b></td></tr>
+              </table>
+            </li>
+            <li>Get on track (menus send nothing). The line above turns green when data arrives.</li>
+          </ol>
+          <div class="hint" id="setup-more"></div>
+        </div>
+      </details>
     </section>
 
     <section class="panel">
@@ -254,7 +279,7 @@
   </div>
 </div>
 
-<script src="/static/charts.js?v=3.7"></script>
-<script src="/static/app.js?v=3.7"></script>
+<script src="/static/charts.js?v=3.8"></script>
+<script src="/static/app.js?v=3.8"></script>
 </body>
 </html>

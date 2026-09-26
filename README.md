@@ -24,47 +24,77 @@ strategy calls.
   a *race* mode that speaks pit calls and strategy changes to you while you
   drive — see setup below.
 
-## Quick start
+## Get it running
+
+Three ways, easiest first. All of them end with the dashboard open at
+**http://localhost:8000** and a *Setup* panel that shows exactly what to type
+into the game.
+
+**1. Download a build (no Python needed).** Grab the zip for Windows, macOS
+or Linux from the [Releases](../../releases) page, unzip it anywhere, and run
+`sim-vs-reality` (double-click on Windows). Windows SmartScreen and macOS
+Gatekeeper will warn about an unsigned app the first time: choose *Run anyway*
+/ *Open*.
+
+**2. One command, if you have Python 3.10+.**
 
 ```
-run.bat            # creates .venv on first run, then serves http://localhost:8000
+pipx install git+https://github.com/ShayanDsouza/F123-AI-Race-Engineer
+sim-vs-reality
 ```
 
-The UDP listener starts with the app (port 20777, or `F1_UDP_PORT`), so laps
-are captured from the first session you drive. Set `F1_UDP_AUTOSTART=0` to
-start it by hand from the sidebar instead.
+(`pip install …` works too; `pipx` just keeps it out of your other Python
+packages.) `sim-vs-reality --help` lists the options: web port, UDP port,
+data folder, `--no-browser`.
 
-No PS5 handy? The simulator sends a synthetic two-car session (you + an AI
-"VERSTAPPEN" on its own lap clock) over real UDP:
+**3. From a checkout.** `run.bat` on Windows, `./run.sh` on macOS/Linux. The
+first run creates a private `.venv` and installs the dependencies; later runs
+start straight away.
+
+Whichever way, the first time the app listens on the network your OS asks
+whether to allow it. **Windows:** tick *Private networks* and *Allow access*.
+If you clicked *Cancel*, the console's data is silently blocked; run it once
+as administrator, or add an inbound rule for UDP 20777 in Windows Defender
+Firewall. **macOS:** click *Allow*.
+
+No console handy? The simulator sends a synthetic two-car session (you + an
+AI "VERSTAPPEN" on its own lap clock) over real UDP:
 
 ```
-.venv\Scripts\python.exe tools\simulate_lap.py
+sim-vs-reality-simulate        # or: python tools/simulate_lap.py
 ```
 
-Tests (no console, no network, no API key needed):
+## Connect your console (PS5, Xbox, or F1 on PC)
 
-```
-pip install -r requirements-dev.txt
-python -m pytest
-```
+The *Setup* panel in the sidebar shows these steps with **your computer's IP
+address filled in**, and turns green the moment telemetry arrives. It opens
+by itself on first run; the *Setup* button brings it back.
 
-## PS5 setup (F1 23)
-
-1. PS5 and this PC on the **same network**.
-2. Find this PC's IPv4 address: `ipconfig`.
-3. F1 23 → **Settings → Telemetry Settings**:
-   - UDP Telemetry: **On** · Broadcast Mode: **Off**
-   - IP Address: **your PC's IP** · Port: **20777**
-   - Send Rate: **60 Hz** (120 Hz gains nothing — the real reference telemetry
-     is only ~4 Hz, so 60 Hz is already far finer)
+1. Console and computer on the **same network** (same Wi-Fi, or both on the
+   router by cable).
+2. F1 23 (F1 24/25 work too) → **Settings → Telemetry Settings**:
+   - UDP Telemetry: **On**
+   - UDP Broadcast Mode: **On** — the easiest option, no IP address to type.
+     If broadcast doesn't reach your computer (some routers isolate Wi-Fi
+     clients), set it **Off** and enter the IP address the Setup panel shows.
+   - UDP Port: **20777**
+   - UDP Send Rate: **60 Hz** (120 Hz gains nothing; the real reference
+     telemetry is only ~4 Hz)
    - UDP Format: **2023**
-4. Check the sidebar shows *Listening on UDP 20777*, then get on track.
+3. Get on track. F1 23 sends **nothing** from the menus. The sidebar's **Hz
+   readout** is the diagnostic: ~60 Hz means data is arriving cleanly, frozen
+   readings mean the game is paused.
 
-F1 23 sends **nothing** from the menus — telemetry only flows once you're in a
-session. The **Hz readout** in the sidebar is the diagnostic: ~60 Hz means data
-is arriving cleanly. Frozen readings mean the game is paused.
+Playing F1 23 on the *same* PC as the app? Use IP address **127.0.0.1**.
 
-Works with F1 24/25 too if you set **UDP Format: 2023**.
+**Race-mode HUD on a phone:** the Setup panel lists a `http://<your-ip>:8000`
+address. Open it on a phone or tablet on the same network, press *Enter race
+mode*, and the engineer speaks from there while the PC records.
+
+The UDP port you set in the sidebar is remembered. Command-line and
+environment overrides: `--udp-port` / `F1_UDP_PORT`, `--port` /
+`SIMVSREALITY_WEB_PORT`, `--data` / `SIMVSREALITY_DATA`, `F1_UDP_AUTOSTART=0`
+to start the listener by hand.
 
 ## AI race engineer (Google Gemini)
 
@@ -136,8 +166,11 @@ analysis.
   meaningless. (Canada 2023 qualifying is the classic trap: it was wet.)
 - **Sector splits** are exact when both laps report official sector times;
   otherwise they're labelled "Split — approx, by distance".
-- Recorded laps are plain JSON in `data/laps/`. Real data is cached in
-  `data/fastf1_cache/`.
+- Recorded laps are plain JSON in the data folder (`data/laps/` in a
+  checkout; for installed copies `%LOCALAPPDATA%\SimVsReality` on Windows,
+  `~/Library/Application Support/SimVsReality` on macOS,
+  `~/.local/share/sim-vs-reality` on Linux; the Setup panel shows the path).
+  Real data is cached beside them in `fastf1_cache/`.
 - Real telemetry has no steering channel and quantized throttle/brake; treat
   braking-point differences under ~5 m as noise.
 - **Flashbacks** are handled: a rewind inside a lap drops the stretch you are
@@ -149,11 +182,27 @@ analysis.
   time disagrees with the trace by more than 1.5 s the trace clock is used and
   the lap is flagged `lap_time_estimated`.
 
+## Developing
+
+```
+pip install -r requirements-dev.txt
+python -m pytest                          # 59 tests, no console/network/key needed
+pyinstaller packaging/sim-vs-reality.spec # standalone bundle in dist/sim-vs-reality/
+```
+
+Pushing a tag such as `v1.2.0` makes GitHub Actions build the Windows, macOS
+and Linux bundles and attach them to a release; every push runs the tests on
+all three platforms.
+
 ## Project layout
 
 ```
 backend/
   app.py            FastAPI app + REST API
+  cli.py            `sim-vs-reality` command: starts the server, opens the browser
+  paths.py          where data lives (checkout vs installed vs bundled)
+  settings.py       persisted settings (UDP port)
+  netinfo.py        this machine's LAN address for the game's telemetry screen
   analysis.py       distance alignment, delta, corner detection
   coach.py          coaching, strategy and condition warnings
   engineer.py       AI race engineer (Google Gemini)
@@ -169,7 +218,9 @@ frontend/           dashboard (vanilla JS + canvas charts)
 tools/
   simulate_lap.py   synthetic two-car UDP session for testing
 tests/              pytest suite: packet parsing, lap assembly, analysis, store, API
-data/               recorded laps, FastF1 cache, Gemini key (created at runtime)
+packaging/          PyInstaller spec for the standalone bundle
+.github/workflows/  tests on every push; release bundles on tags
+data/               recorded laps, FastF1 cache, settings, Gemini key (checkout only)
 ```
 
 ### API surface
@@ -177,6 +228,7 @@ data/               recorded laps, FastF1 cache, Gemini key (created at runtime)
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/status` | listener state + live car/session snapshot (polled by the UI) |
+| `GET /api/setup` | this machine's IP addresses, port, and whether telemetry is arriving |
 | `GET /api/laps?scope=player\|opponent\|all` | recorded laps (headers only, indexed) |
 | `GET/DELETE /api/laps/{id}` | one lap with its full trace |
 | `GET /api/compare` | your lap vs a real 2023 lap (FastF1 or OpenF1) |
@@ -212,8 +264,10 @@ Ordered by how much they would change what you see on screen.
 
 ## Troubleshooting
 
-- **No packets** — check UDP Format is 2023 and you're on track, not in menus.
-  `GET /api/status` shows `wrong_format_seen` if the format is off.
+- **No packets** — the Setup panel says what it sees: nothing at all (game
+  settings or firewall), packets in the wrong format (set UDP Format 2023),
+  or packets that stopped (game paused / in menus). `GET /api/setup` has the
+  same information.
 - **A lap didn't save** — `GET /api/status` → `last_finalize` says exactly why
   (too few samples, incomplete coverage, invalidated). Flashbacks and restarts
   are discarded on purpose.

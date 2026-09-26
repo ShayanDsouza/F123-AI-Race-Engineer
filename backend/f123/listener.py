@@ -15,6 +15,8 @@ class UdpListener:
         self.port: Optional[int] = None
         self.error: Optional[str] = None
         self.rcvbuf: int = 0
+        self.last_sender: Optional[str] = None   # where the telemetry comes from
+        self.datagrams: int = 0
 
     @property
     def running(self) -> bool:
@@ -51,11 +53,13 @@ class UdpListener:
     def _run(self):
         while self._running and self._sock is not None:
             try:
-                data, _addr = self._sock.recvfrom(4096)
+                data, addr = self._sock.recvfrom(4096)
             except socket.timeout:
                 continue
             except OSError:
                 break
+            self.datagrams += 1
+            self.last_sender = addr[0]
             try:
                 self._on_datagram(data)
             except Exception as exc:  # never let a parse error kill the thread

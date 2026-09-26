@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sim-vs-reality"
+version = "1.1.0"
+description = "F1 23 telemetry coach: your laps vs real 2023 F1 telemetry and the in-game AI, with a Gemini race engineer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "fastf1>=3.1",
+    "numpy",
+    "pandas",
+    "requests",
+    "google-genai",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx", "pyinstaller"]
+
+[project.scripts]
+sim-vs-reality = "backend.cli:main"
+sim-vs-reality-simulate = "tools.simulate_lap:main"
+
+[tool.setuptools]
+packages = ["backend", "backend.f123", "frontend", "tools"]
+
+[tool.setuptools.package-data]
+frontend = ["*.html", "*.js", "*.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

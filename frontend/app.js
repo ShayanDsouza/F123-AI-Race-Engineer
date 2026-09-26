@@ -55,6 +55,66 @@ async function toggleListener() {
   pollStatus();
 }
 
+// ---------------------------------------------------------------- setup ----
+// Everything a new user needs to type into the game, plus a live verdict on
+// whether it worked. Opens itself until the first packet has ever arrived.
+let setupOpenedOnce = false;
+let setupFirstSeen = Date.now();
+
+async function pollSetup() {
+  let s;
+  try { s = await api("/api/setup"); } catch (_) { return; }
+  const ip = s.primary_ip || (s.ips && s.ips[0]) || null;
+  $("setup-ip").textContent = ip || "(no network address found)";
+  $("setup-port").textContent = s.udp_port;
+  $("setup-copy").style.display = ip ? "" : "none";
+
+  const d = $("setup-diag");
+  const fmt = s.wrong_format_seen;
+  const waitedS = (Date.now() - setupFirstSeen) / 1000;
+  if (!s.listener.running) {
+    d.className = "setup-diag err";
+    d.textContent = s.listener.error
+      ? `Not listening: ${s.listener.error}. Is another copy of the app (or the simulator) using the port?`
+      : "Not listening — press Start listening.";
+  } else if (s.receiving && !fmt) {
+    d.className = "setup-diag ok";
+    d.textContent = `✓ Telemetry arriving from ${s.listener.last_sender || "the console"} on port ${s.udp_port}. You're set.`;
+  } else if (fmt) {
+    d.className = "setup-diag warn";
+    d.textContent = `Packets are arriving (from ${s.listener.last_sender}) but in format ${fmt}. Set UDP Format to 2023 in the game.`;
+  } else if (s.listener.datagrams > 0) {
+    d.className = "setup-diag warn";
+    d.textContent = `Data arrived earlier from ${s.listener.last_sender} but stopped — the game is paused or in the menus.`;
+  } else {
+    d.className = "setup-diag";
+    d.textContent = `Listening on UDP ${s.udp_port} on ${ip || "this PC"} — waiting for the first packet. Get on track.`;
+    if (waitedS > 45) {
+      d.className = "setup-diag warn";
+      d.textContent += " Nothing after 45 s: check the game settings above, then the firewall" +
+        " (Windows must have allowed Python on Private networks — see notes below).";
+    }
+  }
+
+  const more = [];
+  if (s.ips && s.ips.length > 1) {
+    more.push(`This PC has several addresses: <span class="setup-ip-list">${s.ips.map(esc).join(" · ")}</span>. ` +
+              `Use the one on the same network as the console (Wi-Fi vs Ethernet), or just turn Broadcast Mode on.`);
+  }
+  if (s.web_urls && s.web_urls.length) {
+    more.push(`Race-mode HUD on a phone or tablet: open <b>${esc(s.web_urls[0])}</b> on the same network.`);
+  }
+  more.push(`Playing F1 23 on this same PC? Use IP <b>127.0.0.1</b>.`);
+  more.push(`Windows firewall: if you clicked Cancel on the "allow Python" prompt, run the app once as administrator or add an inbound UDP rule for port ${s.udp_port}.`);
+  $("setup-more").innerHTML = more.map((m) => `<div>${m}</div>`).join("");
+
+  // First run: nobody has ever sent us a packet — open the instructions.
+  if (!setupOpenedOnce && s.packets_seen === 0 && s.listener.datagrams === 0) {
+    setupOpenedOnce = true;
+    $("setup").open = true;
+  }
+}
+
 let pollTick = 0;
 async function pollStatus() {
   let st;
@@ -86,6 +146,7 @@ async function pollStatus() {
       </div>` : "");
     if (++pollTick % 3 === 0) loadLaps();  // pick up freshly recorded laps
   }
+  if ($("setup").open || pollTick % 5 === 0) pollSetup();
   maybeAutoCall(live);
   raceTick(live);
 }
@@ -1200,6 +1261,13 @@ function fastestOwnLap() {
 
 // ------------------------------------------------------------------ init ----
 $("listener-btn").addEventListener("click", toggleListener);
+$("setup-btn").addEventListener("click", () => { $("setup").open = !$("setup").open; pollSetup(); });
+$("setup-copy").addEventListener("click", async () => {
+  const ip = $("setup-ip").textContent;
+  try { await navigator.clipboard.writeText(ip); $("setup-copy").textContent = "copied"; }
+  catch (_) { $("setup-copy").textContent = ip; }
+  setTimeout(() => { $("setup-copy").textContent = "copy"; }, 1500);
+});
 if ($("refresh-laps")) $("refresh-laps").addEventListener("click", loadLaps);
 $("track-select").addEventListener("change", onTrackChange);
 $("session-filter").addEventListener("change", () => {
@@ -1256,5 +1324,6 @@ $("eng-question").addEventListener("keydown", (e) => {
 loadLaps();
 loadEvents();
 pollStatus();
+pollSetup();
 engineerStatus();
 setInterval(pollStatus, 2000);

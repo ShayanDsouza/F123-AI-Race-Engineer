@@ -23,8 +23,9 @@ from typing import Optional
 
 log = logging.getLogger("simvsreality.engineer")
 
-SECRETS_PATH = (__import__("pathlib").Path(__file__).resolve().parent.parent
-                / "data" / "secrets.json")
+from .paths import DATA_DIR
+
+SECRETS_PATH = DATA_DIR / "secrets.json"
 
 
 def read_local_key() -> Optional[str]:

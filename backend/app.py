@@ -18,15 +18,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, coach, store
+from . import analysis, coach, netinfo, settings, store
 from .f123 import packets as pk
+from .paths import DATA_DIR, frontend_dir
 from .f123.listener import UdpListener
 from .f123.recorder import LapRecorder
 
 log = logging.getLogger("simvsreality")
 logging.basicConfig(level=logging.INFO)
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_DIR = frontend_dir()
 
 recorder = LapRecorder(on_lap_complete=lambda rec: _on_lap(rec))
 listener = UdpListener(on_datagram=recorder.feed)
@@ -36,7 +37,8 @@ listener = UdpListener(on_datagram=recorder.feed)
 async def _lifespan(_app: FastAPI):
     """Always be listening. Requiring a manual click after every restart just
     loses laps the user already drove."""
-    port = int(os.environ.get("F1_UDP_PORT", "20777"))
+    port = int(os.environ.get("F1_UDP_PORT") or settings.load()["udp_port"])
+    log.info("data directory: %s", DATA_DIR)
     if os.environ.get("F1_UDP_AUTOSTART", "1") != "0":
         if listener.start(port):
             log.info("UDP listener auto-started on %s", port)
@@ -65,8 +67,38 @@ def status():
             "running": listener.running,
             "port": listener.port,
             "error": listener.error,
+            "last_sender": listener.last_sender,
+            "datagrams": listener.datagrams,
         },
         "live": recorder.live_status(),
+    }
+
+
+@app.get("/api/setup")
+def setup_info():
+    """Everything the setup panel needs to tell a new user what to type into
+    the game: this machine's LAN address(es), the port, and whether anything
+    is arriving yet."""
+    ips = netinfo.lan_ips()
+    web_port = int(os.environ.get("SIMVSREALITY_WEB_PORT", "8000"))
+    return {
+        "hostname": netinfo.hostname(),
+        "ips": ips,
+        "primary_ip": ips[0] if ips else None,
+        "udp_port": (listener.port if listener.running
+                     else settings.load()["udp_port"]),
+        "packet_format": pk.PACKET_FORMAT,
+        "web_urls": [f"http://{ip}:{web_port}" for ip in ips],
+        "data_dir": str(DATA_DIR),
+        "listener": {
+            "running": listener.running,
+            "error": listener.error,
+            "datagrams": listener.datagrams,
+            "last_sender": listener.last_sender,
+        },
+        "receiving": recorder.live_status()["receiving"],
+        "wrong_format_seen": recorder.wrong_format_seen,
+        "packets_seen": recorder.packets_seen,
     }
 
 
@@ -76,8 +108,11 @@ class ListenerConfig(BaseModel):
 
 @app.post("/api/listener/start")
 def listener_start(cfg: ListenerConfig):
+    if not (1 <= cfg.port <= 65535):
+        raise HTTPException(status_code=400, detail="Port must be 1–65535.")
     if not listener.start(cfg.port):
         raise HTTPException(status_code=400, detail=listener.error)
+    settings.save(udp_port=cfg.port)          # survives a restart
     return {"running": True, "port": cfg.port}
 
 

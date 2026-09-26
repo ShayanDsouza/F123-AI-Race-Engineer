@@ -17,7 +17,9 @@ import fastf1
 
 log = logging.getLogger("simvsreality.real_data")
 
-CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "fastf1_cache"
+from .paths import DATA_DIR
+
+CACHE_DIR = DATA_DIR / "fastf1_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 fastf1.Cache.enable_cache(str(CACHE_DIR))
 

@@ -1,13 +1,14 @@
 """The REST surface, driven through FastAPI's test client with the synthetic
 session saved into a temporary store."""
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend import app as app_module
 from backend import engineer as eng
-from backend import store
+from backend import settings, store
 
 
 @pytest.fixture
@@ -31,11 +32,41 @@ def test_status_without_autostart(client):
     assert r["live"]["receiving"] is False
 
 
-def test_listener_start_and_stop(client):
+def test_listener_start_and_stop_persists_the_port(client):
     r = client.post("/api/listener/start", json={"port": 27777})
     assert r.status_code == 200 and r.json() == {"running": True, "port": 27777}
     assert client.get("/api/status").json()["listener"]["port"] == 27777
+    assert settings.load()["udp_port"] == 27777           # survives a restart
     assert client.post("/api/listener/stop").json() == {"running": False}
+    assert client.post("/api/listener/start", json={"port": 0}).status_code == 400
+
+
+def test_setup_info_tells_a_new_user_what_to_type(client):
+    s = client.get("/api/setup").json()
+    assert s["packet_format"] == 2023 and s["udp_port"] == 20777
+    assert isinstance(s["ips"], list) and s["hostname"]
+    assert s["listener"]["running"] is False and s["receiving"] is False
+    assert "packets_seen" in s and s["data_dir"]
+    for url in s["web_urls"]:
+        assert url.startswith("http://") and url.endswith(":8000")
+
+
+def test_setup_reports_the_sender_once_telemetry_arrives(client, traces):
+    import socket
+    from tools import simulate_lap as sim
+    assert client.post("/api/listener/start", json={"port": 27778}).status_code == 200
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    for _d, dg in sim.session_datagrams(*traces, laps=1):
+        sock.sendto(dg, ("127.0.0.1", 27778))
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        s = client.get("/api/setup").json()
+        if s["packets_seen"] > 1000:
+            break
+        time.sleep(0.1)
+    assert s["listener"]["last_sender"] == "127.0.0.1"
+    assert s["listener"]["datagrams"] > 1000 and s["wrong_format_seen"] is None
+    client.post("/api/listener/stop")
 
 
 def test_laps_listing_scopes(client, stored):

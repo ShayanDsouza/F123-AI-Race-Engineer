@@ -18,3 +18,7 @@ Thumbs.db
 
 # Tests
 .pytest_cache/
+
+# Packaging
+build/
+dist/

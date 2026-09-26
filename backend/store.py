@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+from .paths import DATA_DIR
+
 LAPS_DIR = DATA_DIR / "laps"
 
 # What a listing entry carries. Everything a picker, the debrief or the race

@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+fastf1>=3.1
+numpy
+pandas
+requests
+google-genai

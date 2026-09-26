@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim vs Reality — F1 23 Telemetry Coach</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='8' height='8' fill='%23fff'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%23fff'/%3E%3Crect x='8' width='8' height='8' fill='%23111'/%3E%3Crect y='8' width='8' height='8' fill='%23111'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css?v=3.6">
+</head>
+<body>
+<div class="layout">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-flag"></span>
+      <div>
+        <h1>Sim vs Reality</h1>
+        <p>F1 23 vs the 2023 grid</p>
+      </div>
+    </div>
+
+    <section class="panel" id="listener-panel">
+      <div class="panel-head">
+        <h2>PS5 telemetry</h2>
+        <span class="dot" id="listener-dot" title="listener status"></span>
+      </div>
+      <div class="row">
+        <input id="port-input" type="number" value="20777" min="1024" max="65535" aria-label="UDP port">
+        <button id="listener-btn" class="btn">Start listening</button>
+      </div>
+      <div id="live-status" class="live-status">Listener stopped.</div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Compare</h2>
+        <div class="mode-toggle" role="tablist">
+          <button id="mode-fastest" class="mode-btn active" role="tab"
+                  title="Your quickest lap at this track vs the driver's quickest in that session">Fastest</button>
+          <button id="mode-lapforlap" class="mode-btn" role="tab"
+                  title="Your lap 19 vs their lap 19">Lap-for-lap</button>
+          <button id="mode-manual" class="mode-btn" role="tab"
+                  title="Pick both laps yourself">Manual</button>
+        </div>
+      </div>
+
+      <div id="game-lap-block">
+        <label class="lbl">1 · Race weekend</label>
+        <select id="track-select" aria-label="track"></select>
+        <div id="track-event" class="hint"></div>
+
+        <label class="lbl">2 · Your lap</label>
+        <select id="session-filter" aria-label="your session"></select>
+        <select id="game-lap-select" aria-label="your lap" style="margin-top:6px"></select>
+        <div id="mode-explain" class="hint"></div>
+        <div id="no-laps-hint" class="hint">
+          No laps recorded yet. Drive in F1 23 and laps appear here — or run
+          <code>tools\simulate_lap.py</code> for a demo lap.
+        </div>
+      </div>
+
+      <label class="lbl">3 · Compare against</label>
+      <select id="ref-source-select" aria-label="reference source">
+        <option value="real">Real 2023 F1 driver</option>
+        <option value="ingame">In-game AI driver (F1 23)</option>
+      </select>
+
+      <div id="ingame-block" style="display:none">
+        <label class="lbl">4 · In-game driver &amp; lap</label>
+        <select id="ingame-lap-select" aria-label="in-game reference lap"></select>
+        <div id="ingame-hint" class="hint"></div>
+      </div>
+
+      <div id="real-block">
+      <select id="event-select" aria-label="grand prix" style="display:none"></select>
+
+      <label class="lbl">4 · Session</label>
+      <select id="session-select" aria-label="session"></select>
+
+      <label class="lbl" id="ref-driver-lbl">5 · Reference driver</label>
+      <select id="driver-select" aria-label="reference driver"><option>—</option></select>
+      <div id="fastest-hint" class="hint" style="display:none"></div>
+
+      <div id="ref-lap-block">
+        <label class="lbl">6 · Reference lap</label>
+        <select id="ref-lap-select" aria-label="reference lap"><option value="">Fastest lap</option></select>
+      </div>
+
+      <label class="lbl">Data source</label>
+      <select id="source-select" aria-label="data source">
+        <option value="fastf1">FastF1 (full telemetry, recommended)</option>
+        <option value="openf1">OpenF1 (coarse, ~3.7 Hz)</option>
+      </select>
+      </div>
+
+      <button id="compare-btn" class="btn btn-primary">Compare laps</button>
+      <div id="compare-msg" class="hint"></div>
+    </section>
+
+    <section class="panel" id="engineer-panel">
+      <div class="panel-head">
+        <h2>Race engineer</h2>
+        <span class="dot" id="eng-dot" title="engineer status"></span>
+      </div>
+      <div id="eng-status" class="hint">Checking…</div>
+      <button id="race-enter" class="btn btn-primary" style="margin-top:10px">
+        Enter race mode
+      </button>
+      <div class="row" style="margin-top:8px">
+        <input id="eng-question" type="text" placeholder="Ask your engineer…" aria-label="question for the engineer">
+        <button id="eng-btn" class="btn">Radio</button>
+      </div>
+      <label class="eng-auto"><input type="checkbox" id="eng-auto"> Auto-call every lap</label>
+      <button id="debrief-btn" class="btn btn-primary">Debrief my session</button>
+      <div id="debrief-msg" class="hint"></div>
+      <ul id="eng-feed" class="eng-feed"></ul>
+    </section>
+
+  </aside>
+
+  <main class="main" id="main">
+    <div id="empty-state" class="empty">
+      <h2>Pick a lap and a reference driver</h2>
+      <p>Overlay your F1 23 laps on real 2023 telemetry — speed, braking,
+      throttle, gears and a live time delta — with coaching notes on where the
+      lap time is, and strategy notes from the real race.</p>
+      <p class="hint">First fetch of a session downloads real timing data and
+      can take a minute; it's cached on disk afterwards.</p>
+    </div>
+
+    <div id="results" style="display:none">
+      <div class="result-head">
+        <div id="warnings"></div>
+        <div id="matchup"></div>
+        <div id="stat-tiles" class="tiles"></div>
+      </div>
+      <div id="sector-tiles" class="tiles sectors"></div>
+      <div class="panel" id="cmp-map-panel" style="display:none">
+        <div class="panel-head"><h2>Track map — where you lose time</h2>
+          <span id="cmp-map-note" class="hint" style="margin:0"></span></div>
+        <div id="cmp-map-wrap" class="db-map-wrap"><canvas id="cmp-map"></canvas></div>
+      </div>
+      <section class="charts">
+        <div id="chart-speed"></div>
+        <div id="chart-delta"></div>
+        <div id="chart-throttle"></div>
+        <div id="chart-brake"></div>
+        <div id="chart-gear"></div>
+      </section>
+      <section class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h2>Corner analysis</h2></div>
+          <div class="table-scroll">
+            <table id="corner-table">
+              <thead><tr>
+                <th>Corner</th><th>Brake point (you)</th><th>Brake point (ref)</th>
+                <th>Min speed (you)</th><th>Min speed (ref)</th>
+                <th>Gear</th><th>Full throttle after</th><th>Time delta</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <div class="panel">
+            <div class="panel-head"><h2>How to improve</h2></div>
+            <ul id="insights" class="notes"></ul>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div id="debrief-view" style="display:none">
+      <div class="debrief-head">
+        <h2 id="db-headline"></h2>
+        <div id="db-quali" class="db-quali"></div>
+        <p id="db-pace"></p>
+      </div>
+      <div class="panel" id="db-map-panel" style="display:none">
+        <div class="panel-head"><h2>Track map — where the time goes</h2>
+          <span id="db-map-note" class="hint" style="margin:0"></span></div>
+        <div id="db-map-wrap" class="db-map-wrap"><canvas id="db-map"></canvas></div>
+      </div>
+      <section class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h2>Setup changes</h2></div>
+          <ul id="db-setup" class="db-list"></ul>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Where to find time</h2></div>
+          <ul id="db-driving" class="db-list"></ul>
+        </div>
+      </section>
+      <div class="panel">
+        <div class="panel-head"><h2>Qualifying plan</h2></div>
+        <p id="db-plan" class="db-plan"></p>
+      </div>
+      <div id="db-meta" class="hint"></div>
+
+      <div class="panel db-ask">
+        <div class="panel-head"><h2>Ask about this debrief</h2></div>
+        <ul id="db-chat" class="db-chat"></ul>
+        <div class="db-ask-row">
+          <input id="db-question" type="text" autocomplete="off"
+            placeholder="e.g. why more front wing? how do I fix turn 4? which lap was cleanest?"
+            aria-label="ask about the debrief">
+          <button id="db-ask-btn" class="btn btn-primary">Ask</button>
+        </div>
+        <div id="db-ask-msg" class="hint"></div>
+      </div>
+    </div>
+
+    <div id="loading" class="loading" style="display:none">
+      <div class="spinner"></div>
+      <div id="loading-msg">Fetching real telemetry…</div>
+    </div>
+  </main>
+</div>
+<div id="race-view" class="race-view" aria-live="polite">
+  <div class="race-top">
+    <div class="race-session" id="race-session">—</div>
+    <button id="race-exit" class="btn">Exit to debrief</button>
+  </div>
+
+  <div class="race-orb-wrap">
+    <div class="race-orb" id="race-orb"><span id="race-orb-label">READY</span></div>
+  </div>
+
+  <div class="race-radio" id="race-radio">Waiting for telemetry…</div>
+  <div class="race-pit" id="race-pit"></div>
+
+  <div class="race-hud" id="race-hud"></div>
+
+  <div id="race-voice-warn" class="race-voice-warn" style="display:none"></div>
+
+  <div class="race-controls">
+    <input id="race-question" type="text" placeholder="Ask your engineer…" aria-label="ask engineer">
+    <button id="race-radio-btn" class="btn">Radio now</button>
+    <select id="race-voice" aria-label="engineer voice" title="engineer voice"></select>
+    <button id="race-test" class="btn" title="check you can hear the engineer">Test voice</button>
+    <button id="race-debrief" class="btn" title="post-session analysis">Debrief</button>
+    <label class="race-chk"><input type="checkbox" id="race-auto" checked> Auto</label>
+    <label class="race-chk"><input type="checkbox" id="race-mute"> Mute</label>
+  </div>
+</div>
+
+<script src="/static/charts.js?v=3.6"></script>
+<script src="/static/app.js?v=3.6"></script>
+</body>
+</html>

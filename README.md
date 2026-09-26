@@ -1,0 +1,160 @@
+# Sim vs Reality — F1 23 telemetry coach
+
+Compare your **F1 23 (PS5)** laps against **real 2023 F1 telemetry** *and* against
+the **AI drivers inside your own game session**, corner by corner — where you
+brake too early, where the lap time is, plus an AI race engineer for live
+strategy calls.
+
+## What it does
+
+- **Records every car, not just yours.** F1 23 broadcasts telemetry for all 22
+  cars, so the app captures the AI opponents' laps too, labelled with their real
+  names (VERSTAPPEN, LECLERC, RUSSELL…). Your trace is kept at full resolution;
+  opponents are sampled every 3 m to keep a full grid affordable on disk.
+- **Two reference sources.** Overlay your lap on a **real 2023 driver** (via
+  [FastF1](https://docs.fastf1.dev), with [OpenF1](https://openf1.org) as an
+  alternate) or on an **in-game AI driver** from the same session.
+- **Three pairing modes.** *Fastest* (your best vs their best), *Lap-for-lap*
+  (your lap 19 vs their lap 19), or *Manual*.
+- **Analysis.** Distance-aligned speed / throttle / brake / gear overlays, a
+  time-delta curve, sector or distance splits, a per-corner table (braking
+  point, apex speed, apex gear, full-throttle point), ranked coaching notes and
+  strategy notes drawn from the real race.
+- **AI race engineer (Gemini).** A *debrief* mode with the full dashboard, and
+  a *race* mode that speaks pit calls and strategy changes to you while you
+  drive — see setup below.
+
+## Quick start
+
+```
+run.bat            # creates .venv on first run, then serves http://localhost:8000
+```
+
+No PS5 handy? The simulator sends a synthetic two-car session (you + an AI
+"VERSTAPPEN") over real UDP:
+
+```
+.venv\Scripts\python.exe tools\simulate_lap.py
+```
+
+## PS5 setup (F1 23)
+
+1. PS5 and this PC on the **same network**.
+2. Find this PC's IPv4 address: `ipconfig`.
+3. F1 23 → **Settings → Telemetry Settings**:
+   - UDP Telemetry: **On** · Broadcast Mode: **Off**
+   - IP Address: **your PC's IP** · Port: **20777**
+   - Send Rate: **60 Hz** (120 Hz gains nothing — the real reference telemetry
+     is only ~4 Hz, so 60 Hz is already far finer)
+   - UDP Format: **2023**
+4. Press **Start listening** in the sidebar, then get on track.
+
+F1 23 sends **nothing** from the menus — telemetry only flows once you're in a
+session. The **Hz readout** in the sidebar is the diagnostic: ~60 Hz means data
+is arriving cleanly. Frozen readings mean the game is paused.
+
+Works with F1 24/25 too if you set **UDP Format: 2023**.
+
+## AI race engineer (Google Gemini)
+
+Get a free key at **https://aistudio.google.com/apikey**, then set it and
+restart the app:
+
+```powershell
+setx GEMINI_API_KEY "AIza..."
+```
+
+(`GOOGLE_API_KEY` works too.) The app picks a Gemini model automatically from
+the ones your key can see, preferring a fast one for live race calls.
+
+### Two modes
+
+**Debrief mode** is the dashboard: overlays, delta curve, corner table,
+coaching and strategy notes. Use it between sessions.
+
+**Race mode** is for while you're actually driving — a full-screen pulsing orb
+and a small HUD, with the engineer **speaking to you** over your PC's voice.
+Press *Enter race mode* in the sidebar.
+
+- The orb pulses blue normally, amber for a heads-up, and fast red when
+  something needs action this lap.
+- It calls you **once per completed lap** by default (*Auto*), and stays quiet
+  when nothing has changed — it's shown its own recent calls so it follows
+  through on a plan instead of repeating itself.
+- Type a question and hit Enter to ask mid-race ("how are the tyres?"), or
+  press *Radio now* for an immediate call.
+- *Mute* silences the voice but keeps the text. **Esc** exits.
+
+Voice uses your browser's built-in speech synthesis — no extra key, no latency
+from another API call.
+
+### Session debrief
+
+**Debrief my session** analyses your *recorded laps* rather than the live car
+state, and answers "what setup should I run, and where do I improve?".
+
+It feeds the engineer your pace and consistency per compound, tyre degradation
+across the stint, the per-lap tyre and brake temperatures, and — when an AI or
+reference lap exists at that circuit — a corner-by-corner account of where the
+time went. Back comes a ranked list of setup changes (each with the evidence
+and a confidence level), the corners with time available, and a qualifying
+plan.
+
+Everything is scoped to **one circuit**: mixing tracks would make every pace
+figure meaningless.
+
+**After qualifying**, race mode fires this automatically when the session ends
+and tells you the gap to the session-topping car, who set it, and which corners
+account for the deficit. You can also press **Debrief** at any time.
+
+Setup advice needs tyre temperatures, which are only recorded for laps driven
+after this feature existed — older laps still give pace, consistency and corner
+analysis.
+
+## Notes & limits
+
+- **Same circuit only.** Comparisons are refused across different tracks — the
+  traces are aligned on normalized lap distance, so a mismatch would produce
+  confident nonsense. Short layouts and non-2023 circuits are rejected too.
+- **Condition warnings.** Wet-vs-dry, drying-track and big track-temperature
+  differences are flagged, because a wet reference lap makes every delta
+  meaningless. (Canada 2023 qualifying is the classic trap: it was wet.)
+- **Sector splits** are exact when both laps report official sector times;
+  otherwise they're labelled "Split — approx, by distance".
+- Recorded laps are plain JSON in `data/laps/`. Real data is cached in
+  `data/fastf1_cache/`.
+- Real telemetry has no steering channel and quantized throttle/brake; treat
+  braking-point differences under ~5 m as noise.
+
+## Project layout
+
+```
+backend/
+  app.py            FastAPI app + REST API
+  analysis.py       distance alignment, delta, corner detection
+  coach.py          coaching, strategy and condition warnings
+  engineer.py       AI race engineer (Google Gemini)
+  debrief.py        lap-history analysis for setup + improvement advice
+  real_data.py      FastF1 wrapper (2023 season, disk-cached)
+  openf1_data.py    OpenF1 alternate source
+  store.py          lap JSON storage
+  f123/
+    packets.py      F1 23 UDP packet-format-2023 parser
+    listener.py     threaded UDP listener
+    recorder.py     multi-car lap assembly
+frontend/           dashboard (vanilla JS + canvas charts)
+tools/
+  simulate_lap.py   synthetic two-car UDP session for testing
+data/               recorded laps + FastF1 cache (created at runtime)
+```
+
+## Troubleshooting
+
+- **No packets** — check UDP Format is 2023 and you're on track, not in menus.
+  `GET /api/status` shows `wrong_format_seen` if the format is off.
+- **A lap didn't save** — `GET /api/status` → `last_finalize` says exactly why
+  (too few samples, incomplete coverage, invalidated). Flashbacks and restarts
+  are discarded on purpose.
+- **Per-car state** — `GET /api/debug/cars` dumps every car the recorder sees.
+- **Stale UI after an update** — assets are versioned with `?v=N` in
+  `index.html`; bump it when editing `frontend/*.js|css`.

@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# App data — recorded laps, FastF1 cache, and SECRETS (Gemini key)
+data/
+secrets.json
+*.secret
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
